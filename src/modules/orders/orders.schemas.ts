@@ -15,37 +15,32 @@ export const PaymentIntentSchema = z.object({
   }).strict(),
 });
 
+const AddressSchema = z.object({
+  fullName: z.string().min(1),
+  phone: z.string().min(1),
+  addressLine1: z.string().min(1),
+  addressLine2: z.string().optional().nullable(),
+  city: z.string().min(1),
+  region: z.string().optional().nullable(),     // province/state
+  postalCode: z.string().min(1),
+  country: z.string().min(1),
+  email: z.string().email().optional().nullable(), // optional if you use guestEmail
+});
+
+
 export const CreateOrderSchema = z.object({
-  body: z.object({
-    currency: z.string().length(3).default("USD"),
-    paymentProvider: z.enum(["stripe", "paypal"]).default("stripe"),
-    paymentIntentId: z.string().min(5), // Stripe payment_intent id
-    guestEmail: z.string().email().optional(),
+ body: z.object({
+    currency: z.string().min(1).default("USD"),
+    paymentProvider: z.enum(["stripe", "cod", "bank", "quotation"]).optional(), // adjust to what you support
+    guestEmail: z.string().email().optional().nullable(),
+    notes: z.string().optional().nullable(),
 
-    shippingAddress: z.object({
-      fullName: z.string().min(1),
-      phone: z.string().min(6).optional(),
-      addressLine1: z.string().min(1),
-      addressLine2: z.string().optional(),
-      city: z.string().min(1),
-      state: z.string().optional(),
-      postalCode: z.string().min(1),
-      country: z.string().min(1),
-    }).strict(),
+    shippingAddress: AddressSchema,
+    billingAddress: AddressSchema.optional().nullable(),
 
-    billingAddress: z.object({
-      fullName: z.string().min(1),
-      phone: z.string().min(6).optional(),
-      addressLine1: z.string().min(1),
-      addressLine2: z.string().optional(),
-      city: z.string().min(1),
-      state: z.string().optional(),
-      postalCode: z.string().min(1),
-      country: z.string().min(1),
-    }).strict(),
-
-    notes: z.string().max(2000).optional(),
-  }).strict(),
+    // ✅ bypass payment intent for now:
+    paymentIntentId: z.string().optional().nullable(),
+  }),
 });
 
 export const OrderIdSchema = z.object({

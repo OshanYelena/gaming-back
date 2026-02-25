@@ -18,11 +18,14 @@ function couponKey(owner: CartOwner) {
 }
 
 function orderNumberNow() {
-  // ORD-YYYY-xxxxx
   const year = new Date().getFullYear();
   const rand = Math.floor(10000 + Math.random() * 90000);
   return `ORD-${year}-${rand}`;
 }
+
+type PaymentProvider = "stripe" | "quotation" | "manual" | "cod";
+type OrderStatus = "pending" | "confirmed";
+type PaymentStatus = "unpaid" | "paid";
 
 export class OrdersService {
   private ownerFrom(userId?: string, sessionId?: string): CartOwner {
@@ -33,7 +36,10 @@ export class OrdersService {
 
   private async loadCart(owner: CartOwner) {
     const items = await prisma.cartItem.findMany({
-      where: owner.kind === "user" ? { userId: owner.userId } : { sessionId: owner.sessionId },
+      where:
+        owner.kind === "user"
+          ? { userId: owner.userId }
+          : { sessionId: owner.sessionId },
       include: {
         variant: {
           include: {
@@ -46,8 +52,9 @@ export class OrdersService {
       orderBy: { addedAt: "asc" },
     });
 
-    // Filter invalid items (inactive product/variant)
-    const usable = items.filter((it) => it.variant.isActive && it.variant.product.status === "active");
+    const usable = items.filter(
+      (it) => it.variant.isActive && it.variant.product.status === "active"
+    );
 
     return usable;
   }
@@ -66,7 +73,6 @@ export class OrdersService {
     const couponCode = await redis.get(couponKey(owner));
     if (!couponCode) return { couponCode: null as string | null, discountAmount: 0 };
 
-    // Minimal: only percentage/fixed (same as Cart module)
     const promo = await prisma.promotion.findUnique({ where: { code: couponCode } });
     if (!promo || !promo.isActive) return { couponCode: null, discountAmount: 0 };
 
@@ -81,7 +87,6 @@ export class OrdersService {
     let discountAmount = 0;
     if (type === "percentage") discountAmount = subtotal * (value / 100);
     else if (type === "fixed") discountAmount = value;
-    else discountAmount = 0;
 
     discountAmount = Math.max(0, Math.min(discountAmount, subtotal));
     discountAmount = Math.round(discountAmount * 100) / 100;
@@ -133,12 +138,15 @@ export class OrdersService {
     };
   }
 
-  async createPaymentIntent(userId: string | undefined, sessionId: string | undefined, currency: string) {
+  async createPaymentIntent(
+    userId: string | undefined,
+    sessionId: string | undefined,
+    currency: string
+  ) {
     const owner = this.ownerFrom(userId, sessionId);
     const validated = await this.checkoutValidate(userId, sessionId);
     if (!validated.ok) throw httpError(400, "Cart validation failed");
 
-    // Amount in smallest currency unit (Stripe requires integer)
     const amount = Math.round(validated.pricing.total * 100);
 
     const intent = await stripe.paymentIntents.create({
@@ -154,36 +162,65 @@ export class OrdersService {
     return { clientSecret: intent.client_secret, paymentIntentId: intent.id, amount };
   }
 
-  async createOrder(userId: string | undefined, sessionId: string | undefined, input: any) {
+  // ✅ UPDATED
+  async createOrder(
+    userId: string | undefined,
+    sessionId: string | undefined,
+    input: any
+  ) {
     const owner = this.ownerFrom(userId, sessionId);
 
-    // Guest order requires guestEmail
     if (owner.kind === "guest" && !input.guestEmail) {
       throw httpError(400, "guestEmail is required for guest checkout");
     }
 
-    // 1) Re-validate cart just before order creation
+    // Validate cart
     const validated = await this.checkoutValidate(userId, sessionId);
     if (!validated.ok) throw httpError(400, "Cart validation failed");
 
-    // 2) Verify payment (Stripe)
-    if (input.paymentProvider === "stripe") {
+    // Decide mode
+    const paymentProvider: PaymentProvider = (input.paymentProvider ?? "quotation") as PaymentProvider;
+
+    let status: OrderStatus = "pending";
+    let paymentStatus: PaymentStatus = "unpaid";
+    let paymentIntentId: string | null = null;
+
+    // ⚙️ choose whether quotation should reduce inventory now
+    const shouldDecrementInventory = true; // set to (paymentProvider === "stripe") if you want reserve-on-paid only
+
+    // Stripe mode (optional)
+    if (paymentProvider === "stripe") {
+      // Prevent 500s when stripe not configured
+      if (!process.env.STRIPE_SECRET_KEY) {
+        throw httpError(
+          400,
+          'Stripe is not configured. Use paymentProvider="quotation" to place an unpaid order.'
+        );
+      }
+
+      if (!input.paymentIntentId) {
+        throw httpError(400, "paymentIntentId is required for stripe checkout");
+      }
+
       const pi = await stripe.paymentIntents.retrieve(input.paymentIntentId);
 
-      // Acceptable states depend on your payment flow.
-      // Most common: success => status === "succeeded"
       if (pi.status !== "succeeded") {
         throw httpError(400, `Payment not completed (status: ${pi.status})`);
       }
 
-      // Optional sanity: amount matches
       const expectedAmount = Math.round(validated.pricing.total * 100);
       if (pi.amount_received && pi.amount_received !== expectedAmount) {
         throw httpError(400, "Payment amount mismatch");
       }
+
+      status = "confirmed";
+      paymentStatus = "paid";
+      paymentIntentId = input.paymentIntentId;
     } else {
-      // PayPal later
-      throw httpError(400, "PayPal not implemented yet");
+      // quotation/manual/cod
+      status = "pending";
+      paymentStatus = "unpaid";
+      paymentIntentId = null;
     }
 
     const subtotal = validated.pricing.subtotal;
@@ -192,32 +229,41 @@ export class OrdersService {
     const taxAmount = 0;
     const total = validated.pricing.total;
 
-    // 3) Transaction: decrement inventory + create order + clear cart
     const order = await prisma.$transaction(async (tx) => {
-      // Re-load cart items inside the transaction to avoid drift
       const cartItems = await tx.cartItem.findMany({
-        where: owner.kind === "user" ? { userId: owner.userId } : { sessionId: owner.sessionId },
+        where:
+          owner.kind === "user"
+            ? { userId: owner.userId }
+            : { sessionId: owner.sessionId },
         include: {
-          variant: { include: { product: { select: { id: true, name: true, basePrice: true, status: true } } } },
+          variant: {
+            include: {
+              product: { select: { id: true, name: true, basePrice: true, status: true } },
+            },
+          },
         },
       });
 
-      const usable = cartItems.filter((it) => it.variant.isActive && it.variant.product.status === "active");
+      const usable = cartItems.filter(
+        (it) => it.variant.isActive && it.variant.product.status === "active"
+      );
+
       if (usable.length === 0) throw httpError(400, "Cart is empty");
 
-      // Inventory checks + decrement with conditional update
-      for (const it of usable) {
-        if (it.variant.stockQuantity >= 0 && it.quantity > it.variant.stockQuantity) {
-          throw httpError(400, "Insufficient stock");
-        }
+      if (shouldDecrementInventory) {
+        for (const it of usable) {
+          if (it.variant.stockQuantity >= 0 && it.quantity > it.variant.stockQuantity) {
+            throw httpError(400, "Insufficient stock");
+          }
 
-        if (it.variant.stockQuantity >= 0) {
-          const updated = await tx.variant.updateMany({
-            where: { id: it.variantId, stockQuantity: { gte: it.quantity } },
-            data: { stockQuantity: { decrement: it.quantity } },
-          });
+          if (it.variant.stockQuantity >= 0) {
+            const updated = await tx.variant.updateMany({
+              where: { id: it.variantId, stockQuantity: { gte: it.quantity } },
+              data: { stockQuantity: { decrement: it.quantity } },
+            });
 
-          if (updated.count !== 1) throw httpError(409, "Stock changed, please retry");
+            if (updated.count !== 1) throw httpError(409, "Stock changed, please retry");
+          }
         }
       }
 
@@ -229,8 +275,8 @@ export class OrdersService {
           userId: owner.kind === "user" ? owner.userId : null,
           guestEmail: owner.kind === "guest" ? input.guestEmail : null,
 
-          status: "confirmed",
-          paymentStatus: "paid",
+          status,
+          paymentStatus,
 
           shippingAddress: input.shippingAddress,
           billingAddress: input.billingAddress,
@@ -243,8 +289,8 @@ export class OrdersService {
           currency: input.currency,
 
           couponCode: validated.pricing.couponCode ?? null,
-          paymentProvider: input.paymentProvider,
-          paymentIntentId: input.paymentIntentId,
+          paymentProvider,
+          paymentIntentId,
           notes: input.notes ?? null,
 
           items: {
@@ -266,23 +312,26 @@ export class OrdersService {
         include: { items: true },
       });
 
-      // Clear cart
       await tx.cartItem.deleteMany({
-        where: owner.kind === "user" ? { userId: owner.userId } : { sessionId: owner.sessionId },
+        where:
+          owner.kind === "user"
+            ? { userId: owner.userId }
+            : { sessionId: owner.sessionId },
       });
 
       return createdOrder;
     });
 
-    // 4) Coupon usage bookkeeping (outside TX is ok; or inside if you prefer strict)
+    // Coupon bookkeeping
     if (validated.pricing.couponCode) {
-      await prisma.promotion.update({
-        where: { code: validated.pricing.couponCode },
-        data: { usedCount: { increment: 1 } },
-      }).catch(() => {});
+      await prisma.promotion
+        .update({
+          where: { code: validated.pricing.couponCode },
+          data: { usedCount: { increment: 1 } },
+        })
+        .catch(() => {});
     }
 
-    // Clear coupon after order
     await redis.del(couponKey(owner)).catch(() => {});
 
     return order;
@@ -335,20 +384,19 @@ export class OrdersService {
       throw httpError(400, "Order cannot be cancelled at this stage");
     }
 
-    // If already paid, real system does refund flow (admin endpoint in your spec).
-    // For now: mark cancelled and restock items.
     const updated = await prisma.$transaction(async (tx) => {
       const o = await tx.order.update({
         where: { id: orderId },
         data: { status: "cancelled" },
       });
 
-      // Restock (best-effort)
       for (const it of order.items) {
-        await tx.variant.update({
-          where: { id: it.variantId },
-          data: { stockQuantity: { increment: it.quantity } },
-        }).catch(() => {});
+        await tx.variant
+          .update({
+            where: { id: it.variantId },
+            data: { stockQuantity: { increment: it.quantity } },
+          })
+          .catch(() => {});
       }
 
       return o;
