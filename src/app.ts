@@ -11,7 +11,7 @@ import productRoutes from "./modules/products/products.routes";
 import reviewRoutes from "./modules/reviews/reviews.routes";
 import cartRoutes from "./modules/cart/cart.routes";
 import orderRoutes from "./modules/orders/orders.routes";
-
+import adminRoutes from "./modules/admin/admin.routes";
 
 export const app = express();
 
@@ -29,4 +29,5 @@ app.use("/api/v1/products", productRoutes);
 app.use("/api/v1/cart", cartRoutes);
 app.use("/api/v1", reviewRoutes);
 app.use("/api/v1/orders", orderRoutes);
+app.use("/api/v1/admin", adminRoutes);
 app.use(errorHandler);
