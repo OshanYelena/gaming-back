@@ -8,24 +8,22 @@ import {
   OrderIdSchema,
   TrackSchema,
 } from "./orders.schemas";
-import { requireAuth } from "../../middleware/auth";
+import { requireAuth, optionalAuth } from "../../middleware/auth";
 
 const r = Router();
 const c = new OrdersController();
 
-// Checkout (guest or auth)
-r.post("/checkout/validate", validate(CheckoutValidateSchema), c.checkoutValidate);
-r.post("/checkout/payment-intent", validate(PaymentIntentSchema), c.paymentIntent);
+// optionalAuth on the three guest-or-auth endpoints:
+// logged-in users get their userId set → orders are linked to their account.
+// guests (no token) continue to use sessionId → no behaviour change for them.
+r.post("/checkout/validate", optionalAuth, validate(CheckoutValidateSchema), c.checkoutValidate);
+r.post("/checkout/payment-intent", optionalAuth, validate(PaymentIntentSchema), c.paymentIntent);
+r.post("/", optionalAuth, validate(CreateOrderSchema), c.createOrder);
 
-// Create order (guest or auth)
-r.post("/", validate(CreateOrderSchema), c.createOrder);
-
-// Auth user order history
+// Auth-only routes — unchanged
 r.get("/", requireAuth, c.listMine);
 r.get("/track/:orderNumber", validate(TrackSchema), c.trackGuest);
 r.get("/:id", requireAuth, validate(OrderIdSchema), c.getMine);
 r.post("/:id/cancel", requireAuth, validate(OrderIdSchema), c.cancelMine);
-
-// Guest tracking
 
 export default r;
