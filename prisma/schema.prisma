@@ -44,6 +44,10 @@ model User {
   lastName     String?
   phone        String?
   avatarUrl    String?
+  passwordResetToken     String?
+  passwordResetExpiresAt DateTime?
+  emailVerifyToken       String?
+  emailVerifyExpiresAt   DateTime?
   role         UserRole @default(customer)
   isVerified   Boolean  @default(false)
   isActive     Boolean  @default(true)
