@@ -3,12 +3,37 @@ import { AuthService } from "./auth.service";
 import { env } from "../../config/env";
 
 const REFRESH_COOKIE = "refresh_token";
+const ACCESS_COOKIE = "access_token";
+
+function isSecureCookie() {
+  // In local development on http://localhost, Secure cookies are silently dropped by browsers.
+  // Keep Secure enabled only when explicitly requested or in production.
+  return Boolean(env.COOKIE_SECURE) || env.NODE_ENV === "production";
+}
+
+function sameSiteValue() {
+  // Lax works for same-site requests and is compatible with localhost dev.
+  // If you deploy frontend/backed on different sites and need cross-site cookies,
+  // you must use SameSite=None *and* Secure=true.
+  return "lax" as const;
+}
+
+function setAccessCookie(res: Response, token: string) {
+  res.cookie(ACCESS_COOKIE, token, {
+    httpOnly: true,
+    secure: isSecureCookie(),
+    sameSite: sameSiteValue(),
+    // Access token is short-lived; cookie maxAge mirrors the JWT TTL.
+    maxAge: env.ACCESS_TOKEN_TTL_MIN * 60 * 1000,
+    path: "/api/v1",
+  });
+}
 
 function setRefreshCookie(res: Response, token: string) {
   res.cookie(REFRESH_COOKIE, token, {
     httpOnly: true,
-    secure: env.COOKIE_SECURE || env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isSecureCookie(),
+    sameSite: sameSiteValue(),
     maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
     path: "/api/v1/auth",
   });
@@ -16,6 +41,10 @@ function setRefreshCookie(res: Response, token: string) {
 
 function clearRefreshCookie(res: Response) {
   res.clearCookie(REFRESH_COOKIE, { path: "/api/v1/auth" });
+}
+
+function clearAccessCookie(res: Response) {
+  res.clearCookie(ACCESS_COOKIE, { path: "/api/v1" });
 }
 
 export class AuthController {
@@ -27,6 +56,7 @@ export class AuthController {
       const result = await this.svc.register({ email, password, firstName, lastName });
 
       setRefreshCookie(res, result.refreshToken);
+      setAccessCookie(res, result.accessToken);
       return res.status(201).json({ user: result.user, accessToken: result.accessToken });
     } catch (e) {
       next(e);
@@ -42,6 +72,7 @@ export class AuthController {
       const result = await this.svc.login({ email, password, userAgent, ipAddress });
 
       setRefreshCookie(res, result.refreshToken);
+      setAccessCookie(res, result.accessToken);
       return res.json({ user: result.user, accessToken: result.accessToken });
     } catch (e) {
       next(e);
@@ -57,6 +88,7 @@ export class AuthController {
       const result = await this.svc.refresh(rt, { userAgent, ipAddress });
 
       setRefreshCookie(res, result.refreshToken);
+      setAccessCookie(res, result.accessToken);
       return res.json({ user: result.user, accessToken: result.accessToken });
     } catch (e) {
       next(e);
@@ -68,6 +100,7 @@ export class AuthController {
       const rt = req.cookies?.[REFRESH_COOKIE];
       await this.svc.logout(rt);
       clearRefreshCookie(res);
+      clearAccessCookie(res);
       return res.status(204).send();
     } catch (e) {
       next(e);

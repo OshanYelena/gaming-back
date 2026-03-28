@@ -11,7 +11,8 @@ export function ensureGuestSession(req: Request, res: Response, next: NextFuncti
     sid = crypto.randomUUID();
     res.cookie(SESSION_COOKIE, sid, {
       httpOnly: true,
-      secure: env.COOKIE_SECURE || env.NODE_ENV === "production",
+      // Secure cookies are dropped on http://localhost in development.
+      secure: Boolean(env.COOKIE_SECURE) || env.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30d
       path: "/",
