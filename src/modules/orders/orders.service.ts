@@ -367,7 +367,31 @@ export class OrdersService {
   async getMyOrder(userId: string, orderId: string) {
     const order = await prisma.order.findFirst({
       where: { id: orderId, userId },
-      include: { items: true },
+      include: {
+        items: {
+          include: {
+            variant: {
+              select: {
+                id: true,
+                imageUrl: true,
+                optionValues: true,
+                product: {
+                  select: {
+                    id: true,
+                    name: true,
+                    slug: true,
+                    images: {
+                      take: 1,
+                      orderBy: { sortOrder: "asc" },
+                      select: { url: true, altText: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     });
     if (!order) throw httpError(404, "Order not found");
     return order;
