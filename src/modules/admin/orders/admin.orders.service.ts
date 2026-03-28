@@ -75,7 +75,29 @@ export class AdminOrdersService {
       where: { id },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true, phone: true } },
-        items: true,
+        items: {
+          include: {
+            variant: {
+              select: {
+                id: true,
+                imageUrl: true,
+                optionValues: true,
+                product: {
+                  select: {
+                    id: true,
+                    name: true,
+                    slug: true,
+                    images: {
+                      take: 1,
+                      orderBy: { sortOrder: "asc" },
+                      select: { url: true, altText: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
     if (!order) throw httpError(404, "Order not found");
